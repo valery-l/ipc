@@ -62,6 +62,11 @@ void live_table::remove(id_t id)
     ++e.iteration;
 }
 
+id_t live_table::bit_mask(id_t id) const
+{
+    return 1 << id2index(id);
+}
+
 void live_table::srv_idx() const
 {
     return 0;
@@ -83,7 +88,7 @@ id_t live_table::filled_entry(const char* name, size_t index)
     return id;
 }
 
-size_t  live_table::id2index(id_t id     ) const { return id % max_points_number; }
+size_t  live_table::id2index(id_t   id   ) const { return id % max_points_number; }
 id_t    live_table::index2id(size_t index) const { return entries[index].iteration * max_points_number + index; }
 
 } // namespace ipc

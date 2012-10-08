@@ -18,24 +18,6 @@ typedef function<void(const void*, size_t, client_id)>  on_server_receive_f;
 typedef function<void()>            on_client_event_f; // connected, disconnected
 typedef function<void(client_id)>   on_server_event_f; // connected, disconnected
 
-struct client
-{
-    client(string name, on_client_receive_f const& on_recv, on_client_event_f const& event);
-   ~client();
-
-    void send(const void* data, size_t size);
-};
-
-
-struct server
-{
-    server(on_server_receive_f const& on_recv, on_server_event_f const& event);
-   ~server();
-
-    void send(const void* data, size_t size);
-};
-
-
 struct live_table
 {
     typedef size_t id_t;
@@ -50,6 +32,8 @@ struct live_table
 
     void udpate(id_t id);
     void remove(id_t id);
+
+    id_t bit_mask(id_t id) const;
 
 private:
     // in seconds
@@ -88,13 +72,15 @@ private:
 
 struct client_live_state_provider
 {
+    typedef live_table::id_t id_t;
+
     client_live_state_provider(string name)
         : name_(name)
     {
         // TODO: initialize table pointer!
     }
 
-    bool refresh_state() // returns current state
+    optional<std::pair<id_t, id_t> > refresh_state() // returns client id and its bit mask if connected
     {
         try
         {
@@ -108,18 +94,18 @@ struct client_live_state_provider
                 lock.release();
                 sync_.reset();
 
-                return false;
+                return boost::none;
             }
 
             if (id_ && !table_->exist(*id_)) // oops, server has removed me
-                return false;
+                return boost::none;
 
             if (!id_) // wasn't registered
                 id_ = in_place(table_->register_client(name));
             else
                 table_->update(*id_);
 
-            return true;
+            return std::make_pair(*id_, table_->bit_mask(*id_));
         }
         catch(interprocess_exception const& err)
         {
@@ -150,9 +136,9 @@ private:
     typedef scoped_lock<table_sync::lock_type> lock_t;
 
 private:
-    string                      name_;
-    optional<live_table::id_t>  id_;
-    live_table*                 table_;
+    string          name_;
+    optional<id_t>  id_;
+    live_table*     table_;
 
 private:
     optional<table_sync> sync_;

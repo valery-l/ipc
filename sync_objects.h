@@ -13,23 +13,26 @@ template<class resource_t>
 struct auto_rm
 {
     auto_rm(const char* name, bool auto_remove)
-        : removing_name_(auto_remove ? name : "")
-        , resource_     (open_or_create, name)
+        : remover_  (auto_remove ? name : "")
+        , resource_ (open_or_create, name)
     {
-    }
-
-    ~auto_rm()
-    {
-        if (!removing_name_.empty())
-            resource::remove(removing_name_.c_str());
     }
 
     resource_t& get()       { return resource_; }
     resource_t& operator* (){ return get();     }
     resource_t* operator->(){ return &resource_;}
 
+    struct remover
+    {
+        remover(string name) : name(name)   { apply(); }
+       ~remover()                           { apply(); }
+
+        void apply() { if (!name.empty()) resource_t::remove(name.c_str()); }
+        string name;
+    };
+
 private:
-    string      removing_name_;
+    remover     remover_ ; // should be invoked before resource constructor, and after its destructor
     resource_t  resource_;
 };
 

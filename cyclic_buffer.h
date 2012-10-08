@@ -6,7 +6,7 @@
 #include <cstddef>
 
 
-namespace
+namespace ipc
 {
 
 struct message
@@ -38,95 +38,151 @@ struct message
         memcpy(data(), &(*send_data)[0], send_data->size());
     }
 
-    header_t&   header()    { return hdr_; }
-    char*       data  ()    { return reinterpret_cast<char*>(this) + sizeof(header_t); }
+    header_t&       header()        { return hdr_; }
+    header_t const& header() const  { return hdr_; }
+
+    char*       data  ()        { return reinterpret_cast<char*>      (this) + sizeof(header_t); }
+    char const* data  () const  { return reinterpret_cast<const char*>(this) + sizeof(header_t); }
 
 private:
     header_t hdr_ ;
 };
 
-}
-
-namespace ipc
+struct cyclic_queue
 {
-    struct cyclic_queue
+    typedef message::id_t id_t;
+
+    struct iterator
     {
-        cyclic_queue(const void* base, size_t size)
-            : base_(message::dispose(base))
-            , head_(message::dispose(base))
-            , tail_(message::dispose(base))
-            , size_(size)
+        iterator(const message* msg = 0)
+            : msg_(msg)
+        {}
+
+        iterator& operator++()
         {
+            msg_ += msg_->header().next;
+            return *this;
         }
 
-        bool push(message::id_t id, bytes_ptr data)
-        {
-            message* end = end();
-            size_t new_used_size = used_size_ + data->size();
+        message& operator* () { return *msg_; }
+        message* operator->() { return msg_ ; }
 
-            if (end + message::size(data) > base_ + size_)
-            {
-                end = base_;
-                new_used_size += base_ + size_ - end; // unused place in the end
-            }
-
-            if (new_used_size <= size_)
-            {
-                end->init(id, data);
-
-                tail_->header().next = end - tail_;
-                tail_ = end;
-
-                used_space_ = new_used_size;
-
-                return true;
-            }
-
-            return false;
-        }
-
-        void pop()
-        {
-            if (empty())
-                throw std::runtime_error("nothing to pop from cyclic_queue");
-
-            if (head_->header().next < 0) // the end of the buffer
-                used_space_ -= base_ + size_ - head_;
-            else
-                used_space_ -= head_->header().size;
-
-            head_ += head_->header().next;
-        }
-
-        bytes_ptr top () const
-        {
-            if (empty())
-                throw std::runtime_error("no top in cyclic_queue, it's empty");
-        }
-
-        bool empty() const
-        {
-            return head_ == tail_;
-        }
+        bool operator==(iterator const& other) const { return other.msg == msg_ ; }
+        bool operator!=(iterator const& other) const { return !operator==(other); }
 
     private:
-        message* end() const
-        {
-            if (empty())
-                return tail_;
-
-            return tail_ + tail_->header().size;
-        }
-
-    private:
-        message* base_;
-        message* head_;
-        message* tail_;
-        size_t   size_;
-
-    private:
-        size_t used_space_;
+        message* msg_;
     };
+
+
+
+    cyclic_queue(const void* base, size_t size)
+        : base_(message::dispose(base))
+        , head_(base_)
+        , tail_(base_)
+        , size_(size)
+
+        , used_space_(0)
+    {
+        tail_->header().next = -tail_; // 0 - is the end
+    }
+
+    bool push(message::id_t id, bytes_ptr data)
+    {
+        message* next = next();
+        size_t new_used_size = used_size_ + data->size();
+
+        if (next + message::size(data) > base_ + size_)
+        {
+            next = base_;
+            new_used_size += base_ + size_ - next; // unused place in the end
+        }
+
+        if (new_used_size <= size_)
+        {
+            next->init(id, data);
+
+            tail_->header().next = next - tail_;
+            tail_ = next;
+
+            used_space_ = new_used_size;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    void pop()
+    {
+        if (empty())
+            throw std::runtime_error("nothing to pop from cyclic_queue");
+
+        if (head_->header().next < 0) // the end of the buffer
+            used_space_ -= base_ + size_ - head_;
+        else
+            used_space_ -= head_->header().size;
+
+        head_ += head_->header().next;
+    }
+
+    message& top () const
+    {
+        if (empty())
+            throw std::runtime_error("no top in cyclic_queue, it's empty");
+
+        return *head_;
+    }
+
+    bool empty() const
+    {
+        return head_ == tail_;
+    }
+
+    void swap(cyclic_queue& other)
+    {
+        using namespace std;
+
+        swap(other.base_, base_);
+        swap(other.head_, head_);
+        swap(other.tail_, tail_);
+        swap(other.size_, size_);
+        swap(other.used_space_, used_space_);
+    }
+
+    void clear()
+    {
+        swap(cyclic_queue());
+    }
+
+    iterator begin()
+    {
+        return iterator(head_);
+    }
+
+    iterator end()
+    {
+        return iterator();
+    }
+
+private:
+    message* next() const
+    {
+        if (empty())
+            return tail_;
+
+        return tail_ + tail_->header().size;
+    }
+
+private:
+    message* base_;
+    message* head_;
+    message* tail_;
+    size_t   size_;
+
+private:
+    size_t used_space_;
+};
 
 
 } //namespace ipc
