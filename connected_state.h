@@ -8,17 +8,22 @@
 
 namespace ipc
 {
+    template<class live_status_provider>
     struct shared_connected_state
     {
+        typedef
+            typename live_status_provider::live_status
+            live_status;
+
         shared_connected_state()
             : connected_(false)
         {
         }
 
-        bool set_connected(bool connected) // returns previous connection state
+        live_status set_connected(live_status const& connected) // returns previous connection state
         {
             boost::mutex::scoped_lock lock(mutex_);
-            bool was_connected = connected_;
+            live_status was_connected = connected_;
 
             connected_ = connected;
 
@@ -28,7 +33,7 @@ namespace ipc
             return was_connected;
         }
 
-        void is_connected()
+        live_status is_connected()
         {
             boost::mutex::scoped_lock lock(mutex_);
             return connected_;
@@ -43,7 +48,7 @@ namespace ipc
         }
 
     private:
-        bool                        connected_;
+        live_status                 connected_;
         boost::mutex                mutex_;
         boost::condition_variable   condvar_;
     };

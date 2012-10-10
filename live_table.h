@@ -5,7 +5,8 @@
 
 #include <boost/date_time.hpp>
 
-#include "sync_objects.h"
+#include "ipc_helpers.h"
+#include "cyclic_queue.h"
 
 namespace ipc
 {
@@ -20,7 +21,7 @@ typedef function<void(client_id)>   on_server_event_f; // connected, disconnecte
 
 struct live_table
 {
-    typedef size_t id_t;
+    typedef cyclic_queue::id_t id_t;
 
     id_t server_id() const;
 
@@ -35,16 +36,10 @@ struct live_table
 
     id_t bit_mask(id_t id) const;
 
-private:
-    // in seconds
-    const static size_t alive_check_timeout = 1;
-
-    // if current time and last time of client (server) differs by more than disconnect_timeout, it's considered as disconnected
-    const static size_t disconnect_timeout  = mutex_timeout * 5;
-
+    string name(id_t id) const;
 
 private:
-    static const size_t max_slots_number = 64;
+    static const size_t max_slots_number = sizeof(id_t) * 8;
     static const size_t max_name_len     = 64;
 
     struct entry
@@ -70,26 +65,71 @@ private:
     array<entry, max_points_number> entries;
 };
 
-struct client_live_state_provider
-{
-    typedef live_table::id_t id_t;
 
-    client_live_state_provider(string name)
-        : name_(name)
+struct table_sync
+{
+    typedef named_mutex lock_type;
+
+    auto_rm<lock_type>  mutex;
+    shared_buffer       table_buffer;
+    live_table*         table;
+
+    static optional<table_sync> create(bool owns)
     {
-        // TODO: initialize table pointer!
+        auto_rm<lock_type> mutex("simex.ipc.live_table_mutex", owns);
+        optional<shared_buffer> sb = shared_buffer::safe_create("simex.ipc.live_table_buffer", sizeof(live_table), owns, *mutex);
+
+        if (!sb)
+            return boost::none;
+
+        return table_sync
     }
 
-    optional<std::pair<id_t, id_t> > refresh_state() // returns client id and its bit mask if connected
+private:
+    table_sync(auto_rm<lock_type>&& mutex, shared_buffer&& buffer)
+        : mutex         (forward(mutex ))
+        , table_buffer  (forward(buffer))
+        , table         (static_cast<live_table*>(table_buffer.pointer()))
+    {
+    }
+};
+
+
+struct client_live_status_provider
+{
+    typedef
+        live_table::id_t
+        id_t;
+
+    struct client_id
+    {
+        id_t id, bit_mask;
+        client_id(id_t id, id_t bit_mask) : id(id), bit_mask(bit_mask){}
+    };
+
+    typedef
+        optional<client_id>
+        live_status;
+
+public:
+    client_live_status_provider(string name)
+        : name_(name)
+    {
+    }
+
+    live_status refresh_state() // returns client id and its bit mask if connected
     {
         try
         {
             if (!sync_) // try to connect
-                sync_ = in_place(false);
+                sync_ = table_sync::create(false);
+
+            if (!sync_) // failed
+                return boost::none;
 
             lock_t lock(sync_->mutex.get(), time_after_ms(wait_timeout_ms));
 
-            if (!lock.owns() || !table_->alive(table_->server_id()))
+            if (!lock.owns() || !sync_->table_->alive(sync_->table_->server_id()))
             {
                 lock.release();
                 sync_.reset();
@@ -97,15 +137,15 @@ struct client_live_state_provider
                 return boost::none;
             }
 
-            if (id_ && !table_->exist(*id_)) // oops, server has removed me
+            if (id_ && !sync_->table_->exist(*id_)) // oops, server has removed me
                 return boost::none;
 
             if (!id_) // wasn't registered
-                id_ = in_place(table_->register_client(name));
+                id_ = in_place(sync_->table_->register_client(name_));
             else
-                table_->update(*id_);
+                sync_->table_->update(*id_);
 
-            return std::make_pair(*id_, table_->bit_mask(*id_));
+            return client_id(*id_, sync_->table_->bit_mask(*id_));
         }
         catch(interprocess_exception const& err)
         {
@@ -113,7 +153,7 @@ struct client_live_state_provider
         }
     }
 
-    void disconnect(bool server_too)
+    void disconnect(bool kill_server, function<void(live_status const&)> cleaning)
     {
         if (id_)
         {
@@ -121,10 +161,12 @@ struct client_live_state_provider
 
             if (lock.owns())
             {
-                table_->remove(*id_);
+                sync_->table_->remove(*id_);
 
-                if (server_too)
-                    table_->remove(table_->server_id());
+                if (kill_server)
+                    sync_->table_->remove(table_->server_id());
+                else if (cleaning)
+                    cleaning();
             }
         }
 
@@ -138,9 +180,79 @@ private:
 private:
     string          name_;
     optional<id_t>  id_;
-    live_table*     table_;
 
 private:
+    optional<table_sync> sync_;
+};
+
+struct server_live_status_provider
+{
+    typedef live_table::id_t id_t;
+
+public:
+    server_live_status_provider()
+    {
+    }
+
+    bool refresh_state(function<void(live_status const&, id_t)> cleaning)
+    {
+        try
+        {
+            if (!sync_) // try to connect
+                sync_ = in_place(true);
+
+            lock_t lock(sync_->mutex.get(), time_after_ms(wait_timeout_ms));
+
+            if (!lock.owns() || !sync_->table_->alive(sync_->table_->server_id()))
+            {
+                lock.release();
+                sync_.reset();
+
+                return boost::none;
+            }
+
+            if (id_ && !sync_->table_->exist(*id_)) // oops, server has removed me
+                return boost::none;
+
+            if (!id_) // wasn't registered
+                id_ = in_place(sync_->table_->register_client(name_));
+            else
+                sync_->table_->update(*id_);
+
+            return client_id(*id_, sync_->table_->bit_mask(*id_));
+        }
+        catch(interprocess_exception const& err)
+        {
+            sync_.reset();
+        }
+    }
+
+    void disconnect(bool kill_server, function<void(live_status const&)> cleaning)
+    {
+        if (id_)
+        {
+            lock_t lock(sync_->mutex.get(), time_after_ms(wait_timeout_ms));
+
+            if (lock.owns())
+            {
+                sync_->table_->remove(*id_);
+
+                if (kill_server)
+                    sync_->table_->remove(table_->server_id());
+                else if (cleaning)
+                    cleaning();
+            }
+        }
+
+        id_  .reset();
+        sync_.reset();
+    }
+
+private:
+    typedef scoped_lock<table_sync::lock_type> lock_t;
+
+private:
+    set<id_t>            alive_clients_;
     optional<table_sync> sync_;
 };
 

@@ -67,6 +67,11 @@ id_t live_table::bit_mask(id_t id) const
     return 1 << id2index(id);
 }
 
+string live_table::name(id_t id) const
+{
+    return &(entries[id2index()].name[0]);
+}
+
 void live_table::srv_idx() const
 {
     return 0;

@@ -22,12 +22,12 @@ OTHER_FILES += \
 HEADERS += \
     live_table.h \
     stdafx.h \
-    sync_objects.h \
     client_impl.h \
     connected_state.h \
     ipc_common.h \
-    cyclic_buffer.h \
-    shared_buffer.h
+    ipc_helpers.h \
+    shared_queue.h \
+    cyclic_queue.h
 
 SOURCES += \
     live_table.cpp \
