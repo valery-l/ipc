@@ -4,6 +4,7 @@
 #include "connected_state.h"
 #include "cyclic_queue.h"
 #include "shared_queue.h"
+#include "client.h"
 
 // to .cpp
 #include <common/data_wrapper.h>
@@ -15,12 +16,13 @@ namespace ipc
 {
 
 struct client_impl
-        : boost::noncopyable
-        , boost::enable_shared_from_this
+    : boost::noncopyable
+    , boost::enable_shared_from_this<client_impl>
 {
-    typedef function<void(const void*, size_t)> on_receive_f;
-    typedef function<void()>                    on_event_f; // connected, disconnected
-    typedef shared_ptr<client_impl>             ptr_t;
+    typedef client::on_receive_f            on_receive_f;
+    typedef client::on_event_f              on_event_f; // connected, disconnected
+
+    typedef boost::shared_ptr<client_impl>  ptr_t;
 
     static ptr_t create(
         string name,
@@ -28,10 +30,10 @@ struct client_impl
         on_event_f      const& on_connected,
         on_event_f      const& on_disconnected)
     {
-        ptr_t ptr = make_shared<client_impl>(name, on_recv, on_connected, on_disconnected);
+        ptr_t ptr(new client_impl(name, on_recv, on_connected, on_disconnected));
 
         // should be started only after shared_ptr created
-        swap(ptr->sending_, thread(bind(&client_impl::process_send, this)));
+        ptr->sending_ = std::move(boost::thread(bind(&client_impl::process_send, ptr)));
 
         return ptr;
     }
@@ -46,9 +48,9 @@ struct client_impl
         object_alive_ = false;
 
         // it will disconnect and stop receiving thread too
-        sending_io_.post(&client_impl::do_disconnect, this, false);
+        sending_io_.post(bind(&client_impl::do_disconnect, this, false));
 
-        sending_io_.post(&io_service::stop, ref(sending_io_));
+        sending_io_.post(bind(&io_service::stop, ref(sending_io_)));
         sending_   .join();
     }
 
@@ -59,11 +61,11 @@ private:
         on_event_f      const& on_connected,
         on_event_f      const& on_disconnected)
 
-        : live_provider_    (name)
-
-        , on_receive_       (on_recv)
+        : on_receive_       (on_recv)
         , on_connected_     (on_connected)
         , on_disconnected_  (on_disconnected)
+
+        , live_provider_    (name, bind(&client_impl::on_last_cleanings, this, _1))
 
         , object_alive_     (true)
     {
@@ -88,17 +90,17 @@ private:
         live_status;
 
 private:
-    void on_last_cleanings(id my_id)
+    void on_last_cleanings(id_t my_id)
     {
-        recv_lock_t lock(recv_sync_->mutex.get(), time_after_ms(client2server::wait_timeout_ms));
+        recv_lock_t lock(recv_sync_->mutex, time_after_ms(wait_timeout_ms));
         if (lock.owns())
-            recv_sync_->buffer.read(live_table::bit_mask(id), 0);
+            recv_sync_->buffer.read(live_table::bit_mask(my_id), 0);
     }
 
     void on_disconnected(bool by_error)
     {
         receiving_.join();
-        swap(receiving_, boost::thread());
+        receiving_ = std::move(boost::thread());
 
         // clearing server-to-client buffer, otherwise other client could come to the place (take the same index)
         // of current deleting client. It will let other client to consider messages, intended for current client, as his.
@@ -113,7 +115,7 @@ private:
     void on_connected()
     {
         Assert(receiving_.get_id() == boost::thread::id());
-        swap(receiving_, boost::thread(bind(&client_impl::process_receive, this)));
+        receiving_ = boost::move(boost::thread(bind(&client_impl::process_receive, this)));
 
         post2caller(on_connected_);
     }
@@ -125,7 +127,7 @@ private:
         on_disconnected(by_error);
     }
 
-    optional<id_t, id_t> refresh_connection() // returns current connection state
+    live_status refresh_connection() // returns current connection state
     {
         live_status now_connected = live_provider_.refresh_state();
         live_status was_connected = live_state_.set_connected(now_connected);
@@ -143,7 +145,7 @@ private:
                 live_state_.set_connected(now_connected);
 
                 recv_sync_.reset();
-                send_sync_.reset(();
+                send_sync_.reset();
             }
         }
 
@@ -154,12 +156,12 @@ private:
     {
         if (live_status status = refresh_connection())
         {
-            send_lock_t lock(send_sync_->mutex.get(), time_after_ms(client2server::wait_timeout_ms));
+            send_lock_t lock(send_sync_->mutex, time_after_ms(wait_timeout_ms));
 
             if (lock.owns())
             {
                 send_sync_->buffer.write(status->id, data);
-                send_sync_->condvar.notify_all();
+                send_sync_->condvar.get().notify_all();
             }
             else
                 do_disconnect(true);
@@ -186,13 +188,13 @@ private:
         deadline_timer timer(sending_io_);
         on_check_connection(timer);
 
-        io_service::work(sending_io_);
+        io_service::work w(sending_io_);
         sending_io_.run();
 
         do_disconnect();
     }
 
-    void fwd_receive(butes_ptr data)
+    void fwd_receive(bytes_ptr data)
     {
         on_receive_(&(*data)[0], data->size());
     }
@@ -201,14 +203,19 @@ private:
     {
         while (live_status status = live_state_.is_connected())
         {
-            recv_lock_t lock(recv_sync_->mutex.get(), time_after_ms(wait_timeout_ms));
+            recv_lock_t lock(recv_sync_->mutex, time_after_ms(wait_timeout_ms));
 
             if (lock.owns())
             {
                 if( !recv_sync_->buffer.empty() ||
-                    timed_timed_wait(recv_sync_->condvar-l.get(), lock, time_after_ms(wait_timeout_ms)))
+                    timed_timed_wait(lock, recv_sync_->condvar.get(), time_after_ms(wait_timeout_ms)))
                 {
-                    recv_sync_->buffer.read(status->bit_mask, bind(post2caller(bind(&client_impl::fwd_receive, this, _1))));
+                    auto posted_receive = [&](bytes_ptr ptr)
+                    {
+                        post2caller(bind(&client_impl::fwd_receive, this, ptr));
+                    };
+
+                    recv_sync_->buffer.read(status->bit_mask, posted_receive);
                 }
                 else if (!lock.owns()) // notification is caught, but mutex couldn't be locked
                 {
@@ -230,8 +237,9 @@ private:
     on_event_f      on_disconnected_;
 
 private:
-    shared_connected_state      live_state_;
-    client_live_status_provider live_provider_;
+    shared_connected_state
+        <client_live_status_provider>   live_state_;
+    client_live_status_provider         live_provider_;
 
 private:
     boost::thread           sending_; // also responsible for connection state maintenance

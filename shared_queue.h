@@ -17,7 +17,7 @@ struct io_buffer
                 ? move(create_buffer(name, mutex))
                 : move(open_buffer  (name)))
 
-        , queue_(mem_.pointer())
+        , queue_(mem_.pointer(), buffer_size)
     {
     }
 
@@ -79,32 +79,40 @@ struct server2client_buffer
                 it->header().id &= ~bit_mask;
             }
         }
+
+        while (!queue_.empty())
+        {
+            if (queue_.top().header().id == 0) // clearing, if all clients have read
+                queue_.pop();
+            else
+                break;
+        }
     }
 
     bool write(id_t id, bytes_ptr data) // false if no more place to write
     {
-        queue_.push(id, data);
+        return queue_.push(id, data);
     }
 };
 
 struct client2server_buffer
     : io_buffer
 {
-    typedef function<void (bytes_ptr, id_t)>  on_recv_f;
+    typedef function<void (id_t, bytes_ptr)>  on_recv_f;
 
     client2server_buffer(string name, bool owns, named_mutex& mutex)
         : io_buffer(name, owns, mutex)
     {
     }
 
-    void read(id_t bit_mask, on_recv_f const& recv) // by server
+    void read(on_recv_f const& recv) // by server
     {
         while(!queue_.empty())
         {
             message& top = queue_.top();
 
             if (recv)
-                recv(data2bytes(top.data(), top.header().size), top.header().id);
+                recv(top.header().id, data2bytes(top.data(), top.header().size));
 
             queue_.pop();
         }
@@ -112,32 +120,26 @@ struct client2server_buffer
 
     bool write(id_t id, bytes_ptr data) // false if no more place to write
     {
-        queue_.push(id, data);
+        return queue_.push(id, data);
     }
 };
+
 
 struct server2client
 {
     typedef named_upgradable_mutex lock_type;
 
     server2client(bool owns)
-        : mutex_rm  (owns ? "simex.ipc.s2c_mutex"   : "")
-        , condvar_rm(owns ? "simex.ipc.s2c_condvar" : "")
-
-        , mutex     ("simex.ipc.s2c_mutex"  , owns)
+        : mutex     ("simex.ipc.s2c_mutex"  , owns)
         , condvar   ("simex.ipc.s2c_condvar", owns)
-        , buffer    ("simex.ipc.s2c_buffer" , owns, *mutex)
+        , buffer    ("simex.ipc.s2c_buffer" , owns, mutex)
     {
     }
 
-private:
-    remover<lock_type>          mutex_rm;
-    remover<named_condition>    condvar_rm;
-
 public:
-    lock_type                   mutex;
-    named_condition             condvar;
-    server2client_buffer        buffer;
+    sync_object<lock_type>          mutex;
+    sync_object<named_condition>    condvar;
+    server2client_buffer            buffer;
 };
 
 struct client2server
@@ -145,23 +147,16 @@ struct client2server
     typedef named_mutex lock_type;
 
     client2server(bool owns)
-        : mutex_rm  (owns ? "simex.ipc.c2s_mutex"   : "")
-        , condvar_rm(owns ? "simex.ipc.c2s_condvar" : "")
-
-        , mutex     ("simex.ipc.c2s_mutex"  , owns)
-        , condvar   ("simex.ipc.c2s_condvar", owns)
-        , buffer    ("simex.ipc.c2s_buffer" , owns, *mutex)
+        : mutex     ("simex.ipc.s2c_mutex"  , owns)
+        , condvar   ("simex.ipc.s2c_condvar", owns)
+        , buffer    ("simex.ipc.c2s_buffer" , owns, mutex)
     {
     }
 
-private:
-    remover<lock_type>          mutex_rm;
-    remover<named_condition>    condvar_rm;
-
 public:
-    lock_type               mutex;
-    named_condition         condvar;
-    client2server_buffer    buffer;
+    sync_object<lock_type>          mutex;
+    sync_object<named_condition>    condvar;
+    client2server_buffer            buffer;
 };
 
 }

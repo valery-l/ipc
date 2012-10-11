@@ -4,6 +4,9 @@
 #include <boost/thread/condition_variable.hpp>
 #include <boost/interprocess/sync/scoped_lock.hpp>
 
+#include <boost/interprocess/sync/named_condition.hpp>
+#include <boost/interprocess/sync/named_mutex.hpp>
+
 namespace ipc
 {
 

@@ -27,8 +27,12 @@ HEADERS += \
     ipc_common.h \
     ipc_helpers.h \
     shared_queue.h \
-    cyclic_queue.h
+    cyclic_queue.h \
+    server_impl.h \
+    client.h \
+    server.h
 
 SOURCES += \
     live_table.cpp \
-    client_impl.cpp
+    client_impl.cpp \
+    server_impl.cpp

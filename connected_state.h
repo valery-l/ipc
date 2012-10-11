@@ -12,11 +12,6 @@ namespace ipc
             typename live_status_provider::live_status
             live_status;
 
-        shared_connected_state()
-            : connected_(false)
-        {
-        }
-
         live_status set_connected(live_status const& connected) // returns previous connection state
         {
             boost::mutex::scoped_lock lock(mutex_);

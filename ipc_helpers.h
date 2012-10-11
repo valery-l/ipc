@@ -15,22 +15,11 @@ namespace ipc
 template<class resource_t>
 struct remover
 {
-    explicit remover(string name)
-        : name(name)
-    {
-        // cause if someone crashes with locked mutex, they will be cleaned by server on its startup
-        apply();
-    }
+    // cause if someone crashes with locked mutex, they will be cleaned by server on its startup
+    explicit remover(string name) : name(name) { apply(); }
+    ~remover()                                 { apply(); }
 
-    remover(remover&& other)
-        : name(move(other.name))
-    {
-    }
-
-   ~remover()
-    {
-        apply();
-    }
+    remover(remover&& other)      : name(move(other.name)) {}
 
     void apply()
     {
@@ -42,31 +31,32 @@ private:
     string name;
 };
 
-
 template<class resource_t>
-struct auto_rm
+struct sync_object
 {
-    auto_rm(const char* name, bool auto_remove)
-        : remover_  (auto_remove ? name : "")
-        , resource_ (open_or_create, name)
+    sync_object(string name, bool owns)
+        : rm_(owns ? name : "")
     {
+        if (owns)
+            res_ = in_place(create_only, name.c_str());
+        else
+            res_ = in_place(open_only  , name.c_str());
     }
 
-    auto_rm(auto_rm&& other)
-        : remover_  (move(other.remover_ ))
-        , resource_ (move(other.resource_))
+    operator resource_t&()
     {
+        return *res_;
     }
 
-    resource_t& get()       { return resource_; }
-    resource_t& operator* (){ return get();     }
-    resource_t* operator->(){ return &resource_;}
+    resource_t& get()
+    {
+        return *res_;
+    }
 
 private:
-    remover<resource_t> remover_ ; // should be invoked before resource constructor, and after its destructor
-    resource_t          resource_;
+    remover <resource_t> rm_;
+    optional<resource_t> res_;
 };
-
 
 struct shared_buffer
     : noncopyable
@@ -128,10 +118,17 @@ private:
 };
 
 
+template<class resource_t>
+resource_t create_sync(string name, bool owns)
+{
+    if (owns)
+        return resource_t(create_only, name.c_str());
+    else
+        return resource_t(open_only  , name.c_str());
+}
 
-
-template<class primitive>
-bool create(optional<primitive>& result)
+template<class resource_t>
+bool create(optional<resource_t>& result)
 {
     try
     {
@@ -144,8 +141,8 @@ bool create(optional<primitive>& result)
     }
 }
 
-template<class primitive>
-bool open(optional<primitive>& result)
+template<class resource_t>
+bool open(optional<resource_t>& result)
 {
     try
     {
