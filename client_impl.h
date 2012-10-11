@@ -88,11 +88,11 @@ private:
         live_status;
 
 private:
-    void on_last_cleanings(live_status const& status)
+    void on_last_cleanings(id my_id)
     {
         recv_lock_t lock(recv_sync_->mutex.get(), time_after_ms(client2server::wait_timeout_ms));
         if (lock.owns())
-            recv_sync_->buffer.read(status->bit_mask, 0);
+            recv_sync_->buffer.read(live_table::bit_mask(id), 0);
     }
 
     void on_disconnected(bool by_error)
@@ -104,7 +104,7 @@ private:
         // of current deleting client. It will let other client to consider messages, intended for current client, as his.
         // the callback is called while live table mutex is locked(!). It is called, only in case of planned disconnect, cause there is no need to
         // clean anything otherwise - server will clean all the buffers
-        live_provider_.disconnect(by_error, bind(&client_impl::on_last_cleanings, this, _1));
+        live_provider_.disconnect(by_error);
 
         send_sync_.reset();
         post2caller(on_disconnected_);
@@ -135,10 +135,7 @@ private:
 
         if (now_connected && !was_connected)
         {
-            send_sync_ = client2server::open();
-            recv_sync_ = server2client::open();
-
-            if (recv_sync_ && recv_sync_)
+            if (open(send_sync_) && open(recv_sync_))
                 on_connected();
             else
             {

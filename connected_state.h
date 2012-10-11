@@ -1,10 +1,7 @@
 #pragma once
 
-#include <boost/thread/mutex.hpp>
-#include <boost/thread/condition_variable.hpp>
-#include <boost/interprocess/sync/scoped_lock.hpp>
-
 #include "live_table.h"
+#include <boost/thread.hpp>
 
 namespace ipc
 {

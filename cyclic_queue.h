@@ -2,7 +2,6 @@
 #include "common/data_wrapper.h"
 
 // to *.cpp
-
 #include <cstddef>
 
 
@@ -29,12 +28,12 @@ struct message
     };
     #pragma pack(pop)
 
-    static size_t   message::size   (bytes_ptr data) { return data->size + sizeof(header_t); }
-    static message* message::dispose(void* where)    { return static_cast<message*>(where); }
+    static size_t   size   (bytes_ptr data) { return data->size() + sizeof(header_t); }
+    static message* dispose(void* where)    { return static_cast<message*>(where); }
 
-    void message::init(id_t id, bytes_ptr send_data)
+    void init(id_t id, bytes_ptr send_data)
     {
-        hdr_ = header(id, send_data->size());
+        hdr_ = header_t(id, send_data->size());
         memcpy(data(), &(*send_data)[0], send_data->size());
     }
 
@@ -54,7 +53,7 @@ struct cyclic_queue
 
     struct iterator
     {
-        iterator(const message* msg = 0)
+        iterator(message* msg = 0)
             : msg_(msg)
         {}
 
@@ -67,16 +66,14 @@ struct cyclic_queue
         message& operator* () { return *msg_; }
         message* operator->() { return msg_ ; }
 
-        bool operator==(iterator const& other) const { return other.msg == msg_ ; }
+        bool operator==(iterator const& other) const { return other.msg_ == msg_ ; }
         bool operator!=(iterator const& other) const { return !operator==(other); }
 
     private:
         message* msg_;
     };
 
-
-
-    cyclic_queue(const void* base, size_t size)
+    cyclic_queue(void* base, size_t size)
         : base_(message::dispose(base))
         , head_(base_)
         , tail_(base_)
@@ -84,13 +81,13 @@ struct cyclic_queue
 
         , used_space_(0)
     {
-        tail_->header().next = -tail_; // 0 - is the end
+        tail_->header().next = (message*)0 - tail_; // 0 - is the end
     }
 
     bool push(message::id_t id, bytes_ptr data)
     {
-        message* next = next();
-        size_t new_used_size = used_size_ + data->size();
+        message* next = next_node();
+        size_t new_used_size = used_space_ + data->size();
 
         if (next + message::size(data) > base_ + size_)
         {
@@ -141,18 +138,17 @@ struct cyclic_queue
 
     void swap(cyclic_queue& other)
     {
-        using namespace std;
-
-        swap(other.base_, base_);
-        swap(other.head_, head_);
-        swap(other.tail_, tail_);
-        swap(other.size_, size_);
-        swap(other.used_space_, used_space_);
+        std::swap(other.base_, base_);
+        std::swap(other.head_, head_);
+        std::swap(other.tail_, tail_);
+        std::swap(other.size_, size_);
+        std::swap(other.used_space_, used_space_);
     }
 
     void clear()
     {
-        swap(cyclic_queue());
+        cyclic_queue tmp(base_, size_);
+        swap(tmp);
     }
 
     iterator begin()
@@ -166,7 +162,7 @@ struct cyclic_queue
     }
 
 private:
-    message* next() const
+    message* next_node() const
     {
         if (empty())
             return tail_;

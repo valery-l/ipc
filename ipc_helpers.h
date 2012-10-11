@@ -38,6 +38,7 @@ struct remover
             resource_t::remove(name.c_str());
     }
 
+private:
     string name;
 };
 
@@ -72,11 +73,12 @@ struct shared_buffer
 {
     shared_buffer(string name, size_t size, bool owns)
         : remover_  (owns ? name : "")
+        , size_     (size)
     {
         if (owns)
-            create_mem();
+            create_mem(name);
         else
-            open_mem  ();
+            open_mem  (name);
     }
 
     shared_buffer(shared_buffer&& other)
@@ -86,83 +88,74 @@ struct shared_buffer
     {
     }
 
-    const void* pointer() const
+    void* pointer() const
     {
-        return reg.get_address();
+        return reg_.get_address();
     }
 
     void clear()
     {
-        memset(pointer(), 0, mem_.get_size());
-    }
-
-    template<class mutex_t>
-    static optional<shared_buffer> safe_create(string name, size_t size, bool owns, mutex_t& mutex)
-    {
-        scoped_lock<mutex_t> lock(mutex, time_after_ms(wait_timeout_ms));
-        if (lock.owns())
-        {
-            bool create = true;
-            for(;;)
-            {
-                try
-                {
-                    shared_memory_object mem(create ? create_only : open_only, name, read_write);
-                    mem.truncate(size);
-
-                    mapped_region reg(smo, read_write);
-
-                    if (create)
-                        memset(reg.get_address(), 0, size);
-
-                    return shared_buffer(name, std::move(mem), std::move(reg), owns);
-                }
-                catch(interprocess_exception const&)
-                {
-                    create = !create;
-                }
-            }
-        }
-        else
-            return boost::none;
+        memset(pointer(), 0, size_);
     }
 
 private:
-    shared_buffer(string name, shared_memory_object&& mem, mapped_region&& reg, bool owns)
-        : remover_  (owns ? name : "")
-        , mem_      (forward(mem))
-        , reg_      (forward(reg))
-    {
-    }
-
-private:
-    void create_mem(string name, size_t size)
+    void create_mem(string name)
     {
         shared_memory_object mem(create_only, name.c_str(), read_write);
-        mem.truncate(size);
+        mem.truncate(size_);
 
-        mapped_region reg(smo, read_write);
-        memset(reg.get_address(), 0, size);
+        mapped_region reg(mem, read_write);
+        memset(reg.get_address(), 0, size_);
 
         mem_ = move(mem);
         reg_ = move(reg);
     }
 
-    void open_mem(string name, size_t size)
+    void open_mem(string name)
     {
         shared_memory_object mem(open_only, name.c_str(), read_write);
-        mapped_region reg(smo, read_write);
+        mapped_region reg(mem, read_write);
 
         mem_ = move(mem);
         reg_ = move(reg);
     }
 
-
-
-protected:
+private:
     remover<shared_memory_object>   remover_;
+    size_t                          size_;
     shared_memory_object            mem_;
     mapped_region                   reg_;
 };
+
+
+
+
+template<class primitive>
+bool create(optional<primitive>& result)
+{
+    try
+    {
+        result = in_place(true);
+        return true;
+    }
+    catch(interprocess_exception const&)
+    {
+        return false;
+    }
+}
+
+template<class primitive>
+bool open(optional<primitive>& result)
+{
+    try
+    {
+        result = in_place(false);
+        return true;
+    }
+    catch(interprocess_exception const&)
+    {
+        return false;
+    }
+}
 
 } // namespace ipc
