@@ -4,7 +4,7 @@
 #include "connected_state.h"
 #include "cyclic_queue.h"
 #include "shared_queue.h"
-#include "server.h"
+#include "ipc/server.h"
 
 // to .cpp
 #include <common/data_wrapper.h>
@@ -166,7 +166,7 @@ private:
 
             if (lock.owns())
             {
-                id_t to = (client == 0) ? all_clients_mask() : live_table::bit_mask(client);
+                id_t to = ((client == 0) ? all_clients_mask() : live_table::bit_mask(client));
 
                 send_sync_->buffer.write(to, data);
                 send_sync_->condvar.get().notify_all();

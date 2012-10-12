@@ -13,7 +13,7 @@ CONFIG -= app_bundle
 #precompile header
 PRECOMPILED_HEADER = stdafx.h
 
-unix:LIBS += -lboost_system -lrt
+unix:LIBS += -lboost_system -lrt -lboost_thread
 
 # sources and headers
 OTHER_FILES += \
@@ -29,8 +29,7 @@ HEADERS += \
     shared_queue.h \
     cyclic_queue.h \
     server_impl.h \
-    client.h \
-    server.h
+    ../_Include/common/qt_dispatch.h
 
 SOURCES += \
     live_table.cpp \

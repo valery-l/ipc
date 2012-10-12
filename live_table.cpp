@@ -45,7 +45,7 @@ bool live_table::alive(id_t id) const
         return false;
 
     entry const& e = entries[id2index(id)];
-    return microsec_clock::universal_time() - e.last_time < seconds(disconnect_timeout);
+    return microsec_clock::universal_time() - e.last_time < milliseconds(disconnect_timeout);
 }
 
 void live_table::update(id_t id)

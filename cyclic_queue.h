@@ -11,18 +11,19 @@ namespace ipc
 struct message
 {
     typedef size_t id_t;
+    const static size_t npos = size_t(-1);
 
     #pragma pack(push, 1)
     struct header_t
     {
-        id_t        id;
-        size_t      size;
-        ptrdiff_t   next;
+        id_t    id;
+        size_t  size;
+        size_t  next; // offset from base
 
         header_t(id_t id, size_t size)
             : id    (id)
             , size  (size)
-            , next  (0)
+            , next  (npos)
         {
         }
     };
@@ -53,56 +54,54 @@ struct cyclic_queue
 
     struct iterator
     {
-        iterator(message* msg = 0)
-            : msg_(msg)
+        iterator(char* base = 0, size_t offset = message::npos)
+            : base_  (base  )
+            , offset_(offset)
         {}
 
         iterator& operator++()
         {
-            msg_ += msg_->header().next;
+            offset_ = (*this)->header().next;
             return *this;
         }
 
-        message& operator* () { return *msg_; }
-        message* operator->() { return msg_ ; }
+        message* operator->() { return message::dispose(base_ + offset_); }
+        message& operator* () { return *operator->(); }
 
-        bool operator==(iterator const& other) const { return other.msg_ == msg_ ; }
+        bool operator==(iterator const& other) const { return other.offset_ == offset_; }
         bool operator!=(iterator const& other) const { return !operator==(other); }
 
     private:
-        message* msg_;
+        char*   base_  ;
+        size_t  offset_;
     };
 
     cyclic_queue(void* base, size_t size)
-        : base_(message::dispose(base))
-        , head_(base_)
-        , tail_(base_)
-        , size_(size)
-
-        , used_space_(0)
+        : base_(static_cast<char*>(base))
+        , hdr_ (new (base_ + size - sizeof(header_t)) header_t(size))
     {
-        tail_->header().next = (message*)0 - tail_; // 0 - is the end
     }
 
     bool push(message::id_t id, bytes_ptr data)
     {
-        message* next = next_node();
-        size_t new_used_size = used_space_ + data->size();
+        size_t next          = next_offset();
+        size_t new_used_size = hdr_->used_space + data->size();
 
-        if (next + message::size(data) > base_ + size_)
+        if (next + message::size(data) > hdr_->size)
         {
-            next = base_;
-            new_used_size += base_ + size_ - next; // unused place in the end
+            next = 0;
+            new_used_size += hdr_->size - next; // unused place in the end
         }
 
-        if (new_used_size <= size_)
+        if (new_used_size <= hdr_->size)
         {
-            next->init(id, data);
+            if (!empty())
+                tail()->header().next = next;
 
-            tail_->header().next = next - tail_;
-            tail_ = next;
+            message::dispose(base_ + next)->init(id, data);
 
-            used_space_ = new_used_size;
+            hdr_->used_space = new_used_size;
+            hdr_->tail       = next;
 
             return true;
         }
@@ -115,12 +114,12 @@ struct cyclic_queue
         if (empty())
             throw std::runtime_error("nothing to pop from cyclic_queue");
 
-        if (head_->header().next < 0) // the end of the buffer
-            used_space_ -= base_ + size_ - head_;
+        if (head()->header().next < hdr_->head) // the end of the buffer
+            hdr_->used_space -= hdr_->size - hdr_->head;
         else
-            used_space_ -= head_->header().size;
+            hdr_->used_space -= head()->header().size;
 
-        head_ += head_->header().next;
+        hdr_->head = (hdr_->used_space == 0) ? 0 : head()->header().next;
     }
 
     message& top () const
@@ -128,32 +127,24 @@ struct cyclic_queue
         if (empty())
             throw std::runtime_error("no top in cyclic_queue, it's empty");
 
-        return *head_;
+        return *head();
     }
 
     bool empty() const
     {
-        return head_ == tail_;
-    }
-
-    void swap(cyclic_queue& other)
-    {
-        std::swap(other.base_, base_);
-        std::swap(other.head_, head_);
-        std::swap(other.tail_, tail_);
-        std::swap(other.size_, size_);
-        std::swap(other.used_space_, used_space_);
+        return hdr_->used_space == 0;
     }
 
     void clear()
     {
-        cyclic_queue tmp(base_, size_);
-        swap(tmp);
+        hdr_->head       = 0;
+        hdr_->tail       = 0;
+        hdr_->used_space = 0;
     }
 
     iterator begin()
     {
-        return iterator(head_);
+        return empty() ? iterator() : iterator(base_, hdr_->head);
     }
 
     iterator end()
@@ -162,22 +153,36 @@ struct cyclic_queue
     }
 
 private:
-    message* next_node() const
+    message* head() const { return message::dispose(base_ + hdr_->head); }
+    message* tail() const { return message::dispose(base_ + hdr_->tail); }
+
+private:
+    size_t next_offset()
     {
         if (empty())
-            return tail_;
+            return hdr_->head;
 
-        return tail_ + tail_->header().size;
+        return hdr_->tail + tail()->header().size;
     }
 
 private:
-    message* base_;
-    message* head_;
-    message* tail_;
-    size_t   size_;
+    struct header_t
+    {
+        header_t(size_t sz)
+            : size(sz - sizeof(header_t))
+        {
+            Assert(sz >= sizeof(header_t));
+        }
+
+        size_t head; // offset from base
+        size_t tail; // valid only in case of !empty()
+        size_t size;
+        size_t used_space;
+    };
 
 private:
-    size_t used_space_;
+    char*       base_;
+    header_t*   hdr_;
 };
 
 

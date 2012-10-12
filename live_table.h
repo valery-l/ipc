@@ -11,6 +11,9 @@
 namespace ipc
 {
 
+using std::cout;
+using std::endl;
+
 typedef size_t client_id;
 
 typedef function<void(const void*, size_t)>             on_client_receive_f;
@@ -279,7 +282,7 @@ private:
                 conn_(id, sync_->table->name(id));
             }
 
-            Assert(!was_alive && !is_alive && exist == false);
+            Assert((!was_alive && !is_alive && exist) == false);
         }
     }
 

@@ -4,7 +4,7 @@
 #include "connected_state.h"
 #include "cyclic_queue.h"
 #include "shared_queue.h"
-#include "client.h"
+#include "ipc/client.h"
 
 // to .cpp
 #include <common/data_wrapper.h>
@@ -79,7 +79,8 @@ private:
 
 private:
     typedef scoped_lock  <client2server::lock_type> send_lock_t;
-    typedef sharable_lock<server2client::lock_type> recv_lock_t;
+    //typedef sharable_lock<server2client::lock_type> recv_lock_t;
+    typedef scoped_lock<server2client::lock_type> recv_lock_t;
 
 private:
     typedef cyclic_queue::id_t id_t;

@@ -62,7 +62,8 @@ struct server2client_buffer
 {
     typedef function<void (bytes_ptr)>  on_recv_f;
 
-    server2client_buffer(string name, bool owns, named_upgradable_mutex& mutex)
+    //server2client_buffer(string name, bool owns, named_upgradable_mutex& mutex)
+    server2client_buffer(string name, bool owns, named_mutex& mutex)
         : io_buffer(name, owns, mutex)
     {
     }
@@ -127,7 +128,8 @@ struct client2server_buffer
 
 struct server2client
 {
-    typedef named_upgradable_mutex lock_type;
+    //typedef named_upgradable_mutex lock_type;
+    typedef named_mutex lock_type;
 
     server2client(bool owns)
         : mutex     ("simex.ipc.s2c_mutex"  , owns)
