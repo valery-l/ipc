@@ -55,6 +55,9 @@ struct client_impl
     }
 
 private:
+    DECL_LOGGER("ipc.client_impl");
+
+private:
     client_impl(
         string name,
         on_receive_f    const& on_recv,
@@ -79,8 +82,8 @@ private:
 
 private:
     typedef scoped_lock  <client2server::lock_type> send_lock_t;
-    //typedef sharable_lock<server2client::lock_type> recv_lock_t;
-    typedef scoped_lock<server2client::lock_type> recv_lock_t;
+    typedef sharable_lock<server2client::lock_type> recv_lock_t;
+    //typedef scoped_lock<server2client::lock_type> recv_lock_t;
 
 private:
     typedef cyclic_queue::id_t id_t;
@@ -110,6 +113,8 @@ private:
         live_provider_.disconnect(by_error);
 
         send_sync_.reset();
+
+        LogInfo("Disconnected");
         post2caller(on_disconnected_);
     }
 
@@ -118,6 +123,7 @@ private:
         Assert(receiving_.get_id() == boost::thread::id());
         receiving_ = boost::move(boost::thread(bind(&client_impl::process_receive, this)));
 
+        LogInfo("Connetced");
         post2caller(on_connected_);
     }
 
@@ -134,7 +140,10 @@ private:
         live_status was_connected = live_state_.set_connected(now_connected);
 
         if (!now_connected &&  was_connected)
+        {
+            LogWarn("Was disconnected by the opponent");
             on_disconnected(true);
+        }
 
         if (now_connected && !was_connected)
         {
@@ -142,6 +151,8 @@ private:
                 on_connected();
             else
             {
+                LogError("Refresh connection: live provider says \'connected\'', but cannot open send or recv sync objects");
+
                 now_connected = boost::none;
                 live_state_.set_connected(now_connected);
 
@@ -161,11 +172,16 @@ private:
 
             if (lock.owns())
             {
-                send_sync_->buffer.write(status->id, data);
+                send_sync_->buffer.write(status.get(), data);
+
+                lock.unlock();
                 send_sync_->condvar.get().notify_all();
             }
             else
+            {
+                LogError("Cannot lock mutex on send");
                 do_disconnect(true);
+            }
         }
     }
 
@@ -186,11 +202,19 @@ private:
 
     void process_send()
     {
-        deadline_timer timer(sending_io_);
-        on_check_connection(timer);
+        try
+        {
+            deadline_timer timer(sending_io_);
+            on_check_connection(timer);
 
-        io_service::work w(sending_io_);
-        sending_io_.run();
+            io_service::work w(sending_io_);
+            sending_io_.run();
+        }
+        catch(std::runtime_error const&)
+        {
+            LogError("Exception caught in sending thread");
+        }
+
 
         do_disconnect();
     }
@@ -202,34 +226,46 @@ private:
 
     void process_receive()
     {
-        while (live_status status = live_state_.is_connected())
+        try
         {
-            recv_lock_t lock(recv_sync_->mutex, time_after_ms(wait_timeout_ms));
-
-            if (lock.owns())
+            while (live_status status = live_state_.is_connected())
             {
-                if( !recv_sync_->buffer.empty() ||
-                    timed_timed_wait(lock, recv_sync_->condvar.get(), time_after_ms(wait_timeout_ms)))
+                recv_lock_t lock(recv_sync_->mutex, time_after_ms(wait_timeout_ms));
+
+                if (lock.owns())
                 {
-                    auto posted_receive = [&](bytes_ptr ptr)
+                    if(!recv_sync_->buffer.empty() ||
+                       timed_timed_wait(lock, recv_sync_->condvar.get(), time_after_ms(wait_timeout_ms)))
                     {
-                        post2caller(bind(&client_impl::fwd_receive, this, ptr));
-                    };
+                        auto posted_receive = [&](bytes_ptr ptr)
+                        {
+                            post2caller(bind(&client_impl::fwd_receive, this, ptr));
+                        };
 
-                    recv_sync_->buffer.read(status->bit_mask, posted_receive);
+                        recv_sync_->buffer.read(live_table::bit_mask(status.get()), posted_receive);
+                    }
+                    else if (!lock.owns()) // notification is caught, but mutex couldn't be locked
+                    {
+                        LogError("Cannot lock mutex on receive after successful condvar waiting");
+                        sending_io_.post(bind(&client_impl::do_disconnect, this, true));
+                        break;
+                    }
                 }
-                else if (!lock.owns()) // notification is caught, but mutex couldn't be locked
+                else // mutex couldn't be locked even after timeout
                 {
+                    LogError("Cannot lock mutex on receive");
                     sending_io_.post(bind(&client_impl::do_disconnect, this, true));
-                    return;
+                    break;
                 }
-            }
-            else // mutex couldn't be locked even after timeout
-            {
-                sending_io_.post(bind(&client_impl::do_disconnect, this, true));
-                return;
             }
         }
+        catch(std::runtime_error const& err)
+        {
+            LogError("Exception caught in receiving thread");
+            sending_io_.post(bind(&client_impl::do_disconnect, this, true));
+        }
+
+        LogDebug("Process receive is finished");
     }
 
 private:

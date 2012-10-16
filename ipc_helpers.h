@@ -103,11 +103,8 @@ private:
 
     void open_mem(string name)
     {
-        shared_memory_object mem(open_only, name.c_str(), read_write);
-        mapped_region reg(mem, read_write);
-
-        mem_ = move(mem);
-        reg_ = move(reg);
+        mem_ = move(shared_memory_object(open_only, name.c_str(), read_write));
+        reg_ = move(mapped_region       (mem_, read_write));
     }
 
 private:

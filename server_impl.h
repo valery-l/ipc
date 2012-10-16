@@ -56,6 +56,9 @@ struct server_impl
     }
 
 private:
+    DECL_LOGGER("ipc.server_impl");
+
+private:
     server_impl(
         on_receive_f        const& on_recv,
         on_event_f          const& on_connected,
@@ -97,11 +100,14 @@ private:
 private:
     void on_client_connected(id_t id)
     {
+        LogInfo("Client connected: " << id);
         post2caller(bind(on_cl_connected_, id));
     }
 
     void on_client_disconnected(id_t id, bool still_exists)
     {
+        LogInfo("Client disconnected: " << id << (still_exists ? " abnormally" : " normally"));
+
         if (still_exists) // clearing output buffer from messages, addressed to this client
         {
             send_lock_t lock(send_sync_->mutex, time_after_ms(wait_timeout_ms));
@@ -114,12 +120,15 @@ private:
 
     void on_disconnected()
     {
+        LogDebug("Joining receiving thread");
         receiving_.join();
         receiving_ = std::move(boost::thread());
 
+        LogDebug("Disconnecting live provider thread");
         live_provider_.disconnect();
 
         send_sync_.reset();
+        LogInfo("Disconnected");
         post2caller(on_disconnected_);
     }
 
@@ -128,6 +137,7 @@ private:
         Assert(receiving_.get_id() == boost::thread::id());
         receiving_ = boost::move(boost::thread(bind(&server_impl::process_receive, this)));
 
+        LogInfo("Connected");
         post2caller(on_connected_);
     }
 
@@ -144,14 +154,17 @@ private:
         live_status was_connected = live_state_.set_connected(now_connected);
 
         if (!now_connected &&  was_connected)
+        {
+            LogWarn("Was disconnected by the opponent");
             on_disconnected();
+        }
 
         if (now_connected && !was_connected)
         {
             ipc::create(send_sync_);
             ipc::create(recv_sync_);
 
-            Assert(send_sync_ && recv_sync_);
+            Verify(send_sync_ && recv_sync_);
             on_connected();
         }
 
@@ -167,12 +180,16 @@ private:
             if (lock.owns())
             {
                 id_t to = ((client == 0) ? all_clients_mask() : live_table::bit_mask(client));
-
                 send_sync_->buffer.write(to, data);
+
+                lock.unlock();
                 send_sync_->condvar.get().notify_all();
             }
             else
+            {
+                LogWarn("Cannot lock mutex on send");
                 do_disconnect();
+            }
         }
     }
 
@@ -204,11 +221,18 @@ private:
 
     void process_send()
     {
-        deadline_timer timer(sending_io_);
-        on_check_connection(timer);
+        try
+        {
+            deadline_timer timer(sending_io_);
+            on_check_connection(timer);
 
-        io_service::work w(sending_io_);
-        sending_io_.run();
+            io_service::work w(sending_io_);
+            sending_io_.run();
+        }
+        catch(std::runtime_error const&)
+        {
+            LogError("Exception caught in sending thread");
+        }
 
         do_disconnect();
     }
@@ -220,37 +244,59 @@ private:
 
     void process_receive()
     {
-        while (live_state_.is_connected())
+        try
         {
-            recv_lock_t lock(recv_sync_->mutex, time_after_ms(wait_timeout_ms));
-
-            if (lock.owns())
+            while (live_state_.is_connected())
             {
-                if( !recv_sync_->buffer.empty() ||
-                    timed_timed_wait(lock, recv_sync_->condvar.get(), time_after_ms(wait_timeout_ms)))
+                using namespace boost::posix_time;
+
+                static ptime time = second_clock::universal_time();
+
+                if (second_clock::universal_time() - time > seconds(10))
                 {
-                    auto posted_receive = [&](id_t id, bytes_ptr ptr)
+                    time = second_clock::universal_time();
+                    LogDebug("Process receive works");
+                }
+
+                recv_lock_t lock(recv_sync_->mutex, time_after_ms(wait_timeout_ms));
+
+                if (lock.owns())
+                {
+                    if( !recv_sync_->buffer.empty() ||
+                        timed_timed_wait(lock, recv_sync_->condvar.get(), time_after_ms(wait_timeout_ms)))
                     {
-                        live_provider::clients_t const& clients = this->live_provider_.clients();
+                        auto posted_receive = [&](id_t id, bytes_ptr ptr)
+                        {
+                            live_provider::clients_t const& clients = this->live_provider_.clients();
 
-                        if (clients.find(id) != clients.end())
-                            post2caller(bind(&server_impl::fwd_receive, this, id, ptr));
-                    };
+                            if (clients.find(id) != clients.end())
+                                post2caller(bind(&server_impl::fwd_receive, this, id, ptr));
+                        };
 
-                    recv_sync_->buffer.read(posted_receive);
+                        recv_sync_->buffer.read(posted_receive);
+                    }
+                    else if (!lock.owns()) // notification is caught, but mutex couldn't be locked
+                    {
+                        LogWarn("Cannot lock mutex on receive after successful condvar waiting");
+                        sending_io_.post(bind(&server_impl::do_disconnect, this));
+                        break;
+                    }
                 }
-                else if (!lock.owns()) // notification is caught, but mutex couldn't be locked
+                else // mutex couldn't be locked even after timeout
                 {
+                    LogWarn("Cannot lock mutex on receive");
                     sending_io_.post(bind(&server_impl::do_disconnect, this));
-                    return;
+                    break;
                 }
-            }
-            else // mutex couldn't be locked even after timeout
-            {
-                sending_io_.post(bind(&server_impl::do_disconnect, this));
-                return;
             }
         }
+        catch(std::runtime_error const& err)
+        {
+            LogError("Exception caught in receiving thread");
+            sending_io_.post(bind(&server_impl::do_disconnect, this));
+        }
+
+        LogDebug("Process receive is finished");
     }
 
 private:

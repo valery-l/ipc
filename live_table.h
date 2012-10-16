@@ -108,19 +108,8 @@ private:
 
 struct client_live_status_provider
 {
-    typedef
-        live_table::id_t
-        id_t;
-
-    struct client_id
-    {
-        id_t id, bit_mask;
-        client_id(id_t id) : id(id), bit_mask(live_table::bit_mask(id)){}
-    };
-
-    typedef
-        optional<client_id>
-        live_status;
+    typedef live_table::id_t    id_t;
+    typedef optional<id_t>      live_status;
 
 public:
     client_live_status_provider(string name, function<void(id_t)> const& cleaning)
@@ -144,7 +133,7 @@ public:
                 else
                     sync_->table->update(*id_);
 
-                return client_id(*id_);
+                return *id_;
             }
         }
 

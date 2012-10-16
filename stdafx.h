@@ -3,8 +3,8 @@
 
 #include "common/stl.h"
 #include "common/boost.h"
-#include "common/points.h"
 
+#define LOG_ASSERT
 #include "logger/logger.hpp"
 
 #include <boost/asio.hpp>
