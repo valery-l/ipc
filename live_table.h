@@ -241,17 +241,31 @@ public:
         disconnect_all  ();
     }
 
-    clients_t const& clients() const
+    clients_t clients() const
     {
+        boost::mutex::scoped_lock lock(clients_mutex_);
         return alive_clients_;
     }
 
 private:
     void update_clients_status()
     {
+        map<size_t, id_t> client_indices;
+        for (auto it = alive_clients_.begin(); it != alive_clients_.end(); ++it)
+            client_indices[live_table::id2index(*it)] = *it;
+
+
+        boost::mutex::scoped_lock lock(clients_mutex_);
         for (size_t i = 1; i < live_table::max_slots_number; ++i)
         {
             id_t id = sync_->table->index2id(i);
+
+            auto it = client_indices.find(i);
+            if (it != client_indices.end() && it->second != id)
+            {
+                alive_clients_.erase(it->second);
+                discon_(it->second, false);
+            }
 
             bool was_alive = alive_clients_.find(id) != alive_clients_.end();
             bool exist     = sync_->table->exist(id);
@@ -292,6 +306,8 @@ private:
 
 private:
     optional<id_t>       id_;
+
+    mutable boost::mutex clients_mutex_;
     clients_t            alive_clients_;
     optional<table_sync> sync_;
 

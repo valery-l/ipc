@@ -11,6 +11,8 @@ struct io_buffer
 {
     typedef cyclic_queue::id_t id_t;
 
+    struct invalid_exception : std::exception {};
+
     template<class mutex_t>
     io_buffer(string name, bool owns, mutex_t& mutex)
         : mem_  (owns
@@ -19,6 +21,8 @@ struct io_buffer
 
         , queue_(mem_.pointer(), buffer_size, owns)
     {
+        if (!queue_.is_valid())
+            throw invalid_exception();
     }
 
     bool empty() const
@@ -29,6 +33,11 @@ struct io_buffer
     void clear()
     {
         queue_.clear();
+    }
+
+    void set_invalid()
+    {
+        return queue_.set_invalid();
     }
 
 protected:
@@ -57,7 +66,7 @@ private:
 struct server2client_buffer
     : io_buffer
 {
-    typedef function<void (bytes_ptr)>  on_recv_f;
+    typedef function<void (data_wrap::bytes_ptr)>  on_recv_f;
 
     server2client_buffer(string name, bool owns, named_upgradable_mutex& mutex)
         : io_buffer(name, owns, mutex)
@@ -71,22 +80,17 @@ struct server2client_buffer
             if ((it->id() & bit_mask) == bit_mask)
             {
                 if (recv)
-                    recv(data2bytes(it->data(), it->data_size()));
+                    recv(data_wrap::copy(it->data(), it->data_size()));
 
                 it->id() &= ~bit_mask;
             }
         }
     }
 
-    void write(id_t id, bytes_ptr data) // false if no more place to write
+    void write(id_t id, data_wrap::bytes_ptr data) // false if no more place to write
     {
-        while (!queue_.empty())
-        {
-            if (queue_.top().id() == 0) // clearing, if all clients have read
-                queue_.pop();
-            else
-                break;
-        }
+        while (!queue_.empty() && (queue_.top().id() == 0)) // clearing, if all clients have read
+            queue_.pop();
 
         queue_.push(id, data);
     }
@@ -95,7 +99,7 @@ struct server2client_buffer
 struct client2server_buffer
     : io_buffer
 {
-    typedef function<void (id_t, bytes_ptr)>  on_recv_f;
+    typedef function<void (id_t, data_wrap::bytes_ptr)>  on_recv_f;
 
     client2server_buffer(string name, bool owns, named_mutex& mutex)
         : io_buffer(name, owns, mutex)
@@ -109,13 +113,13 @@ struct client2server_buffer
             message& top = queue_.top();
 
             if (recv)
-                recv(top.id(), data2bytes(top.data(), top.data_size()));
+                recv(top.id(), data_wrap::copy(top.data(), top.data_size()));
 
             queue_.pop();
         }
     }
 
-    void write(id_t id, bytes_ptr data) // false if no more place to write
+    void write(id_t id, data_wrap::bytes_ptr data) // false if no more place to write
     {
         queue_.push(id, data);
     }

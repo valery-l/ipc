@@ -14,16 +14,16 @@ struct message
     typedef size_t id_t;
     const static size_t npos = size_t(-1);
 
-    static size_t   size   (bytes_ptr data) { return data->size() + sizeof(message); }
-    static message* dispose(void* where)    { return static_cast<message*>(where); }
+    static size_t   size   (data_wrap::bytes_ptr data)  { return data_wrap::size(data) + sizeof(message); }
+    static message* dispose(void* where)                { return static_cast<message*>(where); }
 
-    void init(id_t id, bytes_ptr send_data)
+    void init(id_t id, data_wrap::bytes_ptr send_data)
     {
         id_         = id;
         data_size_  = send_data->size();
         next_       = npos;
 
-        memcpy(data(), &(*send_data)[0], send_data->size());
+        memcpy(data(), data_wrap::data(send_data), data_wrap::size(send_data));
     }
 
     id_t&   id       ()       { return id_; }
@@ -75,7 +75,7 @@ struct cyclic_queue
     {
     }
 
-    void push(message::id_t id, bytes_ptr data)
+    void push(message::id_t id, data_wrap::bytes_ptr data)
     {
         size_t next          = next_offset();
         size_t new_used_size = hdr_->used_space + message::size(data);
@@ -141,6 +141,16 @@ struct cyclic_queue
         return iterator();
     }
 
+    bool is_valid () const
+    {
+        return !hdr_->failed;
+    }
+
+    void set_invalid()
+    {
+        hdr_->failed = true;
+    }
+
 private:
     message* head() const
     {
@@ -164,6 +174,7 @@ private:
     }
 
 private:
+    #pragma pack(push, 1)
     struct header_t
     {
         header_t(size_t sz, bool owns)
@@ -178,7 +189,9 @@ private:
         size_t tail; // valid only in case of !empty()
         size_t size;
         size_t used_space;
+        bool   failed;
     };
+    #pragma pack(pop)
 
 private:
     char*       base_;

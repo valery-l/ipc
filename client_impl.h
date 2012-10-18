@@ -38,9 +38,17 @@ struct client_impl
         return ptr;
     }
 
-    void send(void const* data, size_t size)
+    void send(const void* data, size_t size)
     {
-        sending_io_.post(bind(&client_impl::do_send, this, data2bytes(data, size)));
+        int_send_lock_t lock(internal_send_lock_);
+
+        if (sendq_)
+        {
+            sendq_->push_back(data_wrap::copy(data, size));
+
+            if (sendq_->size() == 1) // was empty
+                sending_io_.post(bind(&client_impl::do_send, this));
+        }
     }
 
     void disconnect_request()
@@ -83,7 +91,6 @@ private:
 private:
     typedef scoped_lock  <client2server::lock_type> send_lock_t;
     typedef sharable_lock<server2client::lock_type> recv_lock_t;
-    //typedef scoped_lock<server2client::lock_type> recv_lock_t;
 
 private:
     typedef cyclic_queue::id_t id_t;
@@ -103,6 +110,11 @@ private:
 
     void on_disconnected(bool by_error)
     {
+        {
+            int_send_lock_t lock(internal_send_lock_);
+            sendq_.reset();
+        }
+
         receiving_.join();
         receiving_ = std::move(boost::thread());
 
@@ -112,6 +124,7 @@ private:
         // clean anything otherwise - server will clean all the buffers
         live_provider_.disconnect(by_error);
 
+        recv_sync_.reset();
         send_sync_.reset();
 
         LogInfo("Disconnected");
@@ -120,18 +133,29 @@ private:
 
     void on_connected()
     {
+        {
+            int_send_lock_t lock(internal_send_lock_);
+            sendq_ = in_place();
+        }
+
         Assert(receiving_.get_id() == boost::thread::id());
         receiving_ = boost::move(boost::thread(bind(&client_impl::process_receive, this)));
 
-        LogInfo("Connetced");
+        LogInfo("Connected");
         post2caller(on_connected_);
     }
 
 private:
     void do_disconnect(bool by_error = false)
     {
-        live_state_.set_connected(boost::none);
-        on_disconnected(by_error);
+        if (send_sync_) // still connected?
+        {
+            send_sync_->buffer.set_invalid();
+            recv_sync_->buffer.set_invalid();
+
+            live_state_.set_connected(boost::none);
+            on_disconnected(by_error);
+        }
     }
 
     live_status refresh_connection() // returns current connection state
@@ -164,15 +188,29 @@ private:
         return now_connected;
     }
 
-    void do_send(bytes_ptr data)
+    void do_send()
     {
+        sendq_t sendq;
+        {
+            int_send_lock_t lock(internal_send_lock_);
+
+            if (!sendq_ || sendq_->empty())
+                return;
+
+            swap(sendq_.get(), sendq);
+        }
+
         if (live_status status = refresh_connection())
         {
             send_lock_t lock(send_sync_->mutex, time_after_ms(wait_timeout_ms));
 
             if (lock.owns())
             {
-                send_sync_->buffer.write(status.get(), data);
+                while (!sendq.empty())
+                {
+                    send_sync_->buffer.write(status.get(), sendq.front());
+                    sendq.pop_front();
+                }
 
                 lock.unlock();
                 send_sync_->condvar.get().notify_all();
@@ -202,26 +240,31 @@ private:
 
     void process_send()
     {
-        try
+        bool exit = false;
+
+        while (!exit)
         {
-            deadline_timer timer(sending_io_);
-            on_check_connection(timer);
+            try
+            {
+                deadline_timer timer(sending_io_);
+                on_check_connection(timer);
 
-            io_service::work w(sending_io_);
-            sending_io_.run();
+                io_service::work w(sending_io_);
+                sending_io_.run();
+
+                exit = true;
+            }
+            catch(std::runtime_error const&)
+            {
+                LogError("Exception caught in sending thread");
+                do_disconnect();
+            }
         }
-        catch(std::runtime_error const&)
-        {
-            LogError("Exception caught in sending thread");
-        }
-
-
-        do_disconnect();
     }
 
-    void fwd_receive(bytes_ptr data)
+    void forward_receive(data_wrap::bytes_ptr ptr)
     {
-        on_receive_(&(*data)[0], data->size());
+        on_receive_(data_wrap::data(ptr), data_wrap::size(ptr));
     }
 
     void process_receive()
@@ -237,9 +280,9 @@ private:
                     if(!recv_sync_->buffer.empty() ||
                        timed_timed_wait(lock, recv_sync_->condvar.get(), time_after_ms(wait_timeout_ms)))
                     {
-                        auto posted_receive = [&](bytes_ptr ptr)
+                        auto posted_receive = [&](data_wrap::bytes_ptr ptr)
                         {
-                            post2caller(bind(&client_impl::fwd_receive, this, ptr));
+                            post2caller(bind(&client_impl::forward_receive, this, ptr));
                         };
 
                         recv_sync_->buffer.read(live_table::bit_mask(status.get()), posted_receive);
@@ -282,6 +325,14 @@ private:
     boost::thread           sending_; // also responsible for connection state maintenance
     io_service              sending_io_;
     optional<client2server> send_sync_;
+
+private:
+    typedef deque<data_wrap::bytes_ptr>     sendq_t;
+    typedef optional<sendq_t>               sendq_opt;
+    typedef boost::mutex::scoped_lock       int_send_lock_t;
+
+    sendq_opt       sendq_;
+    boost::mutex    internal_send_lock_;
 
 private:
     boost::thread           receiving_;

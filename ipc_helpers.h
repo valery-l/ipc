@@ -132,7 +132,7 @@ bool create(optional<resource_t>& result)
         result = in_place(true);
         return true;
     }
-    catch(interprocess_exception const&)
+    catch(std::exception const&)
     {
         return false;
     }
@@ -146,7 +146,7 @@ bool open(optional<resource_t>& result)
         result = in_place(false);
         return true;
     }
-    catch(interprocess_exception const&)
+    catch(std::exception const&)
     {
         return false;
     }
