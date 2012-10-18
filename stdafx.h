@@ -9,6 +9,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/date_time.hpp>
+#include <boost/thread.hpp>
 
 namespace posix_time = boost::posix_time;
 using namespace boost::asio;

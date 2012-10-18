@@ -34,4 +34,5 @@ HEADERS += \
 SOURCES += \
     live_table.cpp \
     client_impl.cpp \
-    server_impl.cpp
+    server_impl.cpp \
+    cyclic_queue.cpp

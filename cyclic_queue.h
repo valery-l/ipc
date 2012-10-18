@@ -1,10 +1,6 @@
 #pragma once
 #include "common/data_wrapper.h"
 
-// to *.cpp
-#include <cstddef>
-
-
 namespace ipc
 {
 
@@ -41,6 +37,8 @@ private:
 };
 #pragma pack(pop)
 
+
+
 struct cyclic_queue
 {
     typedef message::id_t id_t;
@@ -69,109 +67,30 @@ struct cyclic_queue
         size_t  offset_;
     };
 
-    cyclic_queue(void* base, size_t size, bool owns)
-        : base_(static_cast<char*>(base))
-        , hdr_ (new (base_ + size - sizeof(header_t)) header_t(size, owns))
-    {
-    }
 
-    void push(message::id_t id, data_wrap::bytes_ptr data)
-    {
-        size_t next          = next_offset();
-        size_t new_used_size = hdr_->used_space + message::size(data);
 
-        if (next + message::size(data) > hdr_->size)
-        {
-            next = 0;
-            new_used_size += hdr_->size - next; // unused place in the end
-        }
+    cyclic_queue(void* base, size_t size, bool owns);
 
-        VerifyMsg(new_used_size <= hdr_->size, "no more place to push msg");
+    void push(message::id_t id, data_wrap::bytes_ptr data);
+    void pop();
 
-        if (!empty())
-            tail()->next() = next;
+    message& top  () const;
+    bool     empty() const;
 
-        message::dispose(base_ + next)->init(id, data);
+    void clear();
 
-        hdr_->used_space = new_used_size;
-        hdr_->tail       = next;
-    }
+    iterator begin();
+    iterator end  ();
 
-    void pop()
-    {
-        VerifyMsg(!empty(), "nothing to pop from cyclic_queue");
-
-        size_t next = head()->next();
-
-        if (next == message::npos) // last message
-            hdr_->used_space = 0;
-        else if (next < hdr_->head) // the end of the buffer
-            hdr_->used_space -= hdr_->size - hdr_->head;
-        else
-            hdr_->used_space -= next - hdr_->head;
-
-        hdr_->head = (hdr_->used_space == 0) ? 0 : next;
-    }
-
-    message& top() const
-    {
-        VerifyMsg(!empty(), "no top, cyclic_queue is empty");
-        return *head();
-    }
-
-    bool empty() const
-    {
-        return hdr_->used_space == 0;
-    }
-
-    void clear()
-    {
-        hdr_->head       = 0;
-        hdr_->tail       = 0;
-        hdr_->used_space = 0;
-    }
-
-    iterator begin()
-    {
-        return empty() ? iterator() : iterator(base_, hdr_->head);
-    }
-
-    iterator end()
-    {
-        return iterator();
-    }
-
-    bool is_valid () const
-    {
-        return !hdr_->failed;
-    }
-
-    void set_invalid()
-    {
-        hdr_->failed = true;
-    }
+    bool is_valid   () const;
+    void set_invalid();
 
 private:
-    message* head() const
-    {
-        Verify(!empty() || hdr_->head  == 0);
-        return message::dispose(base_ + hdr_->head);
-    }
-
-    message* tail() const
-    {
-        Verify(!empty());
-        return message::dispose(base_ + hdr_->tail);
-    }
+    message* head() const;
+    message* tail() const;
 
 private:
-    size_t next_offset()
-    {
-        if (empty())
-            return hdr_->head;
-
-        return hdr_->tail + tail()->msg_size();
-    }
+    size_t next_offset();
 
 private:
     #pragma pack(push, 1)
